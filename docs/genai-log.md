@@ -1,1 +1,2 @@
-+ Section 6 table: AI explained each technology and its alternative, then wrote the rows at my request after I provided Go, Postgres, pgx. I reviewed each row
+- Section 6 table: AI explained each technology and its alternative, then wrote the rows at my request after I provided Go, Postgres, pgx. I reviewed each row
+- Sections 7 and 9: drafted by AI at my request, reviewed by me; section 7 is the implementation checklist for day 5.

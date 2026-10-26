@@ -139,6 +139,53 @@ flowchart LR
 
 ## 7. Observability Strategy
 
+Goal: answer three questions from outside the process — *is a source slow or failing*, *is the cache doing its job*, *what happened to a specific request*.
+
+### Logging
+- `log/slog` with the JSON handler, written to stdout (collected by the container runtime, no file handling in the app).
+- A middleware creates a `request_id` (UUID) per HTTP request, stores it in `context.Context`, and every log line in that request carries it.
+- One log line per source call: `source`, `vin`, `duration_ms`, `outcome` (`ok` / `empty` / `error` / `timeout`), `cache` (`hit` / `miss` / `stale`).
+- One summary line per request: status code, total duration, `partial`, `stale`.
+- The same per-call facts are also written to the `source_call_log` table in Postgres (the audit log from Data Flow step 7), so they can be queried with SQL after the fact.
+
+### Metrics
+- Prometheus endpoint `GET /metrics` via `prometheus/client_golang`.
+- `http_requests_total{route,status}` and `http_request_duration_seconds{route}` — overall traffic and latency.
+- `source_request_duration_seconds{source}` — histogram per external system; shows which system is slow and whether the 3s timeout is well chosen.
+- `source_errors_total{source,reason}` — error and timeout counts per system.
+- `cache_lookups_total{result="hit|miss|stale"}` — cache effectiveness; a falling hit ratio means the TTL is too short or traffic is mostly unique VINs.
+
+### Tracing
+- Not a full tracing backend in this submission. The `request_id` is propagated to the external systems in an `X-Request-ID` header, so a request can be followed across the API and both mock systems by grepping one id.
+- OpenTelemetry (one span per source call, exported to Jaeger/Tempo) is listed under Future Work; the `request_id` middleware is the place where the trace context would be created.
+
+### Health
+- `GET /healthz` — process is up (for Docker/Kubernetes liveness).
+- `GET /readyz` — Postgres reachable (readiness); the external systems are *not* part of readiness, because the service is designed to keep answering with snapshots when they are down.
+
+### What I would alert on
+- `partial` responses above a few percent for more than 5 minutes — a source is degraded.
+- p95 of `source_request_duration_seconds` approaching 3s — the timeout will start firing.
+- Cache hit ratio dropping sharply — TTL or traffic pattern changed.
+
 ## 8. Use of GenAI
 
+_To be written in my own words on day 6 from `docs/genai-log.md`. Outline:_
+
+- Which tool, and in what role (mentor / reviewer vs. code generator).
+- Design phase: what I asked, which suggestions I accepted and why, which I rejected and why.
+- What I verified myself rather than trusting the answer.
+- What the AI wrote directly into this repository (list it explicitly).
+- Where the AI was wrong and how I caught it.
+
+## 9. Future Work
+
+- Authentication/authorization at an API gateway in front of this service (API key or OAuth2).
+- In-memory L1 cache in front of Postgres once DB round-trips become the bottleneck.
+- OpenTelemetry tracing with one span per source call.
+- Retries with backoff and a per-source circuit breaker, so a flapping system is not hammered.
+- Retention job deleting snapshots older than N days.
+- Pagination of the document list for vehicles with many documents.
+- Rate limiting per client.
+- Replace the two mock systems with real adapters behind the same `Source` interface.
 
