@@ -1,0 +1,1 @@
++ Section 6 table: AI explained each technology and its alternative, then wrote the rows at my request after I provided Go, Postgres, pgx. I reviewed each row
