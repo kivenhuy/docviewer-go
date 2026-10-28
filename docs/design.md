@@ -8,7 +8,7 @@ Build API to get doucment of vehicle base on VIN ( EX: Sales System and Service 
 
 ```mermaid
 flowchart LR
-    C[Client / curl] -->|GET /api/v1/vehicles/{vin}/documents| H
+    C[Client / curl] -->|"GET /api/v1/vehicles/{vin}/documents"| H
     subgraph docviewer [docviewer service]
         H[HTTP handler] --> A[Aggregator]
         A --> R[(Postgres<br/>snapshot + audit)]
