@@ -51,3 +51,10 @@ This file is the raw source for section 8 of `docs/design.md`.
 - Measured the sequential baseline first with a timing test that AI drafted (`TestAggregator_RunsSourcesInParallel`): 202ms for two 100ms sources. The test was red before the change, as intended.
 - AI explained goroutines, `sync.WaitGroup`, data races and `go test -race`, and gave the shape of the "one result slot per source, merge after Wait" pattern as the alternative to a mutex. I rewrote the loop in `aggregator.go` myself. After the change: 100ms, race detector clean, the four existing cases unchanged and green.
 - Design change: `sync.WaitGroup` instead of the `errgroup` listed in the design doc, because source errors are data in the result, not something to collect and return.
+
+## 2026-10-29 — Postgres
+
+### AI wrote directly
+- `migration/20261028134515_snapshots.sql`: AI wrote the two tables (`document_snapshots`, `source_call_log`) from the column list we had agreed on; I had created the goose file from the luckydraw template. I ran the migration and checked the schema with `\d`.
+- `internal/store/postgres.go`: I wrote `Get` and `Put`. Review caught: `SELECT *`, scanning jsonb straight into a struct slice, a leftover `prizes` variable from the luckydraw template, assigning the map entry inside `for range docs` (which dropped empty snapshots), `VALUES` placed after `ON CONFLICT`, a `fetch_at` typo, and `json.Marshal` result discarded. AI verified the SQL against the real database inside a rolled-back transaction.
+- `internal/store/postgres_test.go`: AI wrote it at my request, copying the `TestMain` + skip pattern from my luckydraw project. Three cases: put/get, upsert overwrites, empty snapshot survives (the `for range docs` bug). Verified green against local Postgres and skipping cleanly when no DB is reachable.
