@@ -3,6 +3,7 @@ package aggregator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,14 +19,18 @@ type fakeSource struct {
 	delay time.Duration
 }
 
-
-
 func (f fakeSource) Name() string { return f.name }
 func (f fakeSource) Fetch(ctx context.Context, vin string) ([]domain.Document, error) {
-	if f.delay > 0 {
-		time.Sleep(f.delay)
+	if f.delay == 0 {
+		return f.docs, f.err
 	}
-	return f.docs, f.err
+	select {
+	case <-time.After(f.delay):
+		return f.docs, f.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	// return f.docs, f.err
 }
 
 func doc(id, source string, date string) domain.Document {
@@ -40,6 +45,7 @@ func TestAggregator_Documents(t *testing.T) {
 	tests := []struct {
 		name        string
 		sources     []domain.Source
+		timeout     time.Duration
 		wantLen     int
 		wantPartial bool
 		wantErrs    int
@@ -77,11 +83,24 @@ func TestAggregator_Documents(t *testing.T) {
 			},
 			wantLen: 1, wantPartial: false, wantErrs: 0,
 		},
+		{
+			name: "slow source times out",
+			sources: []domain.Source{
+				fakeSource{name: "A", docs: []domain.Document{doc("A-1", "A", "2024-07-01")}},
+				fakeSource{name: "B", delay: 2 * time.Second},
+			},
+			timeout: 50 * time.Millisecond,
+			wantLen: 1, wantPartial: true, wantErrs: 1,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			agg := New(tt.sources, time.Second)
+			timeout := tt.timeout
+			if timeout == 0 {
+				timeout = time.Second
+			}
+			agg := New(tt.sources, timeout)
 			got := agg.Documents(context.Background(), "1HGCM82633A004352")
 
 			if got.VIN != "1HGCM82633A004352" {
@@ -111,7 +130,13 @@ func TestAggregator_Documents(t *testing.T) {
 				if got.Documents == nil {
 					t.Errorf("Documents source want []")
 				}
+			case "slow source times out":
+				if !strings.Contains(got.Errors[0].Reason, "deadline") {
+					t.Errorf("Error reason %v want deadline", got.Errors[0].Reason)
+				}
+
 			}
+
 		})
 	}
 }
