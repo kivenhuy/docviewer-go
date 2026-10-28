@@ -102,7 +102,13 @@ flowchart LR
 - Timeout 3s
     + Decision : 3 seconds per source call
     + Alternative rejected : no timeout; one global timeout for the whole request.
-    + Why : Total latency is 3s not 6s because the two calls run in parallel. 3s is a provisional value, to be adjusted after measuring source latency during implementation. Timeout for each of request make sure if one of them have timeout not affect on the other things."Parallel fan-out": "measured with two 100ms sources: 202ms sequential vs 100ms parallel, see TestAggregator_RunsSourcesInParallel"
+    + Why : Total latency is 3s not 6s because the two calls run in parallel. 3s is a provisional value, to be adjusted after measuring source latency during implementation. Timeout for each of request make sure if one of them have timeout not affect on the other things.
+
+- Parallel fan-out
+    + Decision : one goroutine per source, one result slot per source, merge after all finish
+    + Alternative rejected : sequential calls
+    + Why : measured with two 100ms sources: 202ms sequential vs 100ms parallel (`TestAggregator_RunsSourcesInParallel`). Total latency is bounded by the slowest source, not the sum.
+
 
 - Empty vs error
     + Decision : Data return empty keep empty list , data return error set partial: true, errors with source & reason 
@@ -131,7 +137,7 @@ flowchart LR
 | Postgres | required persistent store; snapshot and audit log are relational; one dependency for both | Redis for cache + separate DB, rejected to keep one moving part |
 | pgx | native Postgres driver, fast, no ORM layer to debug | GORM, rejected: few simple queries, ORM adds more than it saves |
 | net/http (Go 1.22 routing) | one endpoint only; `GET /api/v1/vehicles/{vin}/documents` is parsed by the standard mux, `r.PathValue("vin")` reads the path param; no framework dependency | chi / gin / echo, rejected: middleware and routing they add are not needed for a single route |
-| sync.WaitGroup | runs one goroutine per source and waits for all; less code and fewer mistakes than a hand-written WaitGroup + error channel. Used **without** `WithContext` cancellation, because one source failing must not cancel the other (partial result) | sync.WaitGroup + error channel, workable but more boilerplate |
+| sync.WaitGroup | one goroutine per source, each writes its own result slot, merge after Wait; no shared state, so no mutex; source errors are data in the result| errgroup, dropped during implementation: nothing to collect and return, and WithContext would cancel the healthy source; mutex-protected shared slice, more to get wrong|
 | log/slog | structured JSON logs from the standard library; every line carries `request_id`, `vin`, `source`, so logs can be grepped or shipped to a log system | stdlib `log` (plain text, no fields); zap / zerolog (faster, but an extra dependency not justified at this scale) |
 | Docker Compose | one command starts Postgres, the API and both mock systems; the reviewer needs nothing installed except Docker | manual Postgres install + 4 terminals, rejected: not reproducible |
 | OpenAPI 3 (YAML) | the assignment asks for a basic API contract for the mocked client side; OpenAPI is the standard and renders in Swagger UI | README-only description or Postman collection, rejected: not machine-readable, harder to keep in sync |
