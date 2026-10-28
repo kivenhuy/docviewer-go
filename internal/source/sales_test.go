@@ -35,12 +35,19 @@ func TestSalesClient_Fetch(t *testing.T) {
 				if tt.delay > 0 {
 					time.Sleep(tt.delay)
 				}
+				if r.URL.Path != "/sales/documents" {
+					t.Errorf("path = %s", r.URL.Path)
+				}
+				if got := r.URL.Query().Get("vin"); got != "1HGCM82633A004352" {
+					t.Errorf("vin = %q", got)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tt.status)
 				w.Write([]byte(tt.body))
 
 			}))
 			defer srvtest.Close()
+
 			ctx := context.Background()
 			// 2 Check timeout
 			if tt.ctxTimeout > 0 {
