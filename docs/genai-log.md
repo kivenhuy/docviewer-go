@@ -44,3 +44,10 @@ This file is the raw source for section 8 of `docs/design.md`.
 
 ### AI wrote directly
 - `internal/aggregator/aggregator_test.go`: AI wrote the `fakeSource`, the `doc` helper, the table skeleton and the first case including the sort assertion. Two case-specific assertions were left as TODOs for me (failing source name; empty slice vs nil).
+
+## 2026-10-28 — parallel fan-out
+
+### Written by me, with AI explanation
+- Measured the sequential baseline first with a timing test that AI drafted (`TestAggregator_RunsSourcesInParallel`): 202ms for two 100ms sources. The test was red before the change, as intended.
+- AI explained goroutines, `sync.WaitGroup`, data races and `go test -race`, and gave the shape of the "one result slot per source, merge after Wait" pattern as the alternative to a mutex. I rewrote the loop in `aggregator.go` myself. After the change: 100ms, race detector clean, the four existing cases unchanged and green.
+- Design change: `sync.WaitGroup` instead of the `errgroup` listed in the design doc, because source errors are data in the result, not something to collect and return.

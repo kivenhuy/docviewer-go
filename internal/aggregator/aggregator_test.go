@@ -12,13 +12,19 @@ import (
 // fakeSource satisfies domain.Source without any HTTP.
 // This is the payoff of the Source interface: the aggregator can be tested in isolation.
 type fakeSource struct {
-	name string
-	docs []domain.Document
-	err  error
+	name  string
+	docs  []domain.Document
+	err   error
+	delay time.Duration
 }
+
+
 
 func (f fakeSource) Name() string { return f.name }
 func (f fakeSource) Fetch(ctx context.Context, vin string) ([]domain.Document, error) {
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
 	return f.docs, f.err
 }
 
@@ -107,5 +113,21 @@ func TestAggregator_Documents(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAggregator_RunsSourcesInParallel(t *testing.T) {
+	sources := []domain.Source{
+		fakeSource{name: "A", delay: 100 * time.Millisecond},
+		fakeSource{name: "B", delay: 100 * time.Millisecond},
+	}
+	agg := New(sources, time.Second)
+
+	start := time.Now()
+	agg.Documents(context.Background(), "X")
+	elapsed := time.Since(start)
+
+	if elapsed > 150*time.Millisecond {
+		t.Errorf("took %v; want < 150ms (sources must run in parallel)", elapsed)
 	}
 }
