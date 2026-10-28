@@ -2,6 +2,7 @@ package aggregator
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -23,8 +24,9 @@ type Result struct {
 }
 
 type fetchResult struct {
-	docs []domain.Document
-	err  error
+	docs      []domain.Document
+	fromCache bool
+	err       error
 }
 
 type Aggregator struct {
@@ -44,6 +46,12 @@ func New(sources []domain.Source, timeout time.Duration, store SnapshotStore, tt
 }
 
 func (a *Aggregator) Documents(ctx context.Context, vin string) Result {
+
+	snaps, err := a.store.Get(ctx, vin)
+	if err != nil {
+		slog.Warn("snapshot store get", "vin", vin, "err", err)
+	}
+
 	data := Result{
 		VIN:       vin,
 		Documents: []domain.Document{},
@@ -57,20 +65,35 @@ func (a *Aggregator) Documents(ctx context.Context, vin string) Result {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+
+			snap, ok := snaps[src.Name()]
+			if ok && time.Since(snap.FetchedAt) < a.ttl {
+				result[i] = fetchResult{docs: snap.Documents, fromCache: true}
+				return
+			}
 			rc, cancel := context.WithTimeout(ctx, a.timeout)
+			defer cancel()
 			docs, err := src.Fetch(rc, vin)
 			result[i] = fetchResult{docs: docs, err: err}
-			cancel()
 		}()
 
 	}
 	wg.Wait()
 	for i, src := range a.sources {
 		r := result[i]
+		if r.err == nil && !r.fromCache {
+			if err := a.store.Put(ctx, vin, src.Name(), r.docs, time.Now()); err != nil {
+				slog.Warn("snapshot store put", "vin", vin, "source", src.Name(), "err", err)
+			}
+		}
 
 		if r.err != nil {
 			data.Partial = true
 			data.Errors = append(data.Errors, SourceError{Source: src.Name(), Reason: r.err.Error()})
+			if snap, ok := snaps[src.Name()]; ok {
+				data.Documents = append(data.Documents, snap.Documents...)
+				data.Stale = true
+			}
 			continue
 		}
 		data.Documents = append(data.Documents, r.docs...)

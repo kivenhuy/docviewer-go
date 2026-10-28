@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,10 +18,14 @@ type fakeSource struct {
 	docs  []domain.Document
 	err   error
 	delay time.Duration
+	calls *int32 // optional: counts Fetch calls (atomic, Fetch runs in goroutines)
 }
 
 func (f fakeSource) Name() string { return f.name }
 func (f fakeSource) Fetch(ctx context.Context, vin string) ([]domain.Document, error) {
+	if f.calls != nil {
+		atomic.AddInt32(f.calls, 1)
+	}
 	if f.delay == 0 {
 		return f.docs, f.err
 	}
@@ -182,4 +187,94 @@ func TestAggregator_RunsSourcesInParallel(t *testing.T) {
 	if elapsed > 150*time.Millisecond {
 		t.Errorf("took %v; want < 150ms (sources must run in parallel)", elapsed)
 	}
+}
+
+// Cache behaviour: data flow steps 3, 5 and 7 of the design doc.
+func TestAggregator_Cache(t *testing.T) {
+	const vin = "1HGCM82633A004352"
+	const ttl = 15 * time.Minute
+	fresh := time.Now().Add(-1 * time.Minute)  // inside TTL
+	expired := time.Now().Add(-1 * time.Hour) // outside TTL
+
+	t.Run("fresh snapshot: source not called, no Put", func(t *testing.T) {
+		store := newFakeStore()
+		store.Put(context.Background(), vin, "A", []domain.Document{doc("CACHED", "A", "2024-07-01")}, fresh)
+		var calls int32
+		src := fakeSource{name: "A", calls: &calls, docs: []domain.Document{doc("LIVE", "A", "2024-07-02")}}
+
+		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+
+		if calls != 0 {
+			t.Errorf("source called %d times; want 0 (cache hit)", calls)
+		}
+		if len(got.Documents) != 1 || got.Documents[0].ID != "CACHED" {
+			t.Errorf("Documents = %v; want the cached doc", got.Documents)
+		}
+		if store.puts != 1 {
+			t.Errorf("Put called %d times; want 1 (only the test's own seed)", store.puts)
+		}
+		if got.Stale || got.Partial {
+			t.Errorf("Stale=%v Partial=%v; want both false on a fresh cache hit", got.Stale, got.Partial)
+		}
+	})
+
+	t.Run("expired snapshot: source called, result written back", func(t *testing.T) {
+		store := newFakeStore()
+		store.Put(context.Background(), vin, "A", []domain.Document{doc("OLD", "A", "2024-07-01")}, expired)
+		var calls int32
+		src := fakeSource{name: "A", calls: &calls, docs: []domain.Document{doc("LIVE", "A", "2024-07-02")}}
+
+		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+
+		if calls != 1 {
+			t.Errorf("source called %d times; want 1 (cache miss)", calls)
+		}
+		if len(got.Documents) != 1 || got.Documents[0].ID != "LIVE" {
+			t.Errorf("Documents = %v; want the live doc", got.Documents)
+		}
+		if store.puts != 2 {
+			t.Errorf("Put called %d times; want 2 (seed + write-back)", store.puts)
+		}
+		if snap := store.snaps[vin]["A"]; len(snap.Documents) != 1 || snap.Documents[0].ID != "LIVE" {
+			t.Errorf("stored snapshot = %v; want the live doc", snap.Documents)
+		}
+		if got.Stale {
+			t.Errorf("Stale = true; want false (fresh data was fetched)")
+		}
+	})
+
+	t.Run("source fails, expired snapshot exists: stale fallback", func(t *testing.T) {
+		store := newFakeStore()
+		store.Put(context.Background(), vin, "A", []domain.Document{doc("OLD", "A", "2024-07-01")}, expired)
+		src := fakeSource{name: "A", err: errors.New("boom")}
+
+		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+
+		if !got.Partial || !got.Stale {
+			t.Errorf("Partial=%v Stale=%v; want both true", got.Partial, got.Stale)
+		}
+		if len(got.Documents) != 1 || got.Documents[0].ID != "OLD" {
+			t.Errorf("Documents = %v; want the old snapshot", got.Documents)
+		}
+		if store.puts != 1 {
+			t.Errorf("Put called %d times; want 1 (a failed fetch must not overwrite the snapshot)", store.puts)
+		}
+	})
+
+	t.Run("source fails, no snapshot: partial only", func(t *testing.T) {
+		store := newFakeStore()
+		src := fakeSource{name: "A", err: errors.New("boom")}
+
+		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+
+		if !got.Partial || got.Stale {
+			t.Errorf("Partial=%v Stale=%v; want Partial=true Stale=false", got.Partial, got.Stale)
+		}
+		if len(got.Documents) != 0 || got.Documents == nil {
+			t.Errorf("Documents = %v; want empty non-nil slice", got.Documents)
+		}
+		if store.puts != 0 {
+			t.Errorf("Put called %d times; want 0", store.puts)
+		}
+	})
 }
