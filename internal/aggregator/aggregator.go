@@ -30,12 +30,16 @@ type fetchResult struct {
 type Aggregator struct {
 	sources []domain.Source
 	timeout time.Duration
+	store   SnapshotStore
+	ttl     time.Duration
 }
 
-func New(sources []domain.Source, timeout time.Duration) *Aggregator {
+func New(sources []domain.Source, timeout time.Duration, store SnapshotStore, ttl time.Duration) *Aggregator {
 	return &Aggregator{
 		sources: sources,
 		timeout: timeout,
+		store:   store,
+		ttl:     ttl,
 	}
 }
 

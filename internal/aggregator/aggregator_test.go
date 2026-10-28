@@ -30,7 +30,34 @@ func (f fakeSource) Fetch(ctx context.Context, vin string) ([]domain.Document, e
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	// return f.docs, f.err
+}
+
+// fakeStore is an in-memory SnapshotStore: vin -> source -> Snapshot.
+// It also counts Put calls so tests can assert when the aggregator writes back.
+type fakeStore struct {
+	snaps map[string]map[string]Snapshot
+	puts  int
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{snaps: map[string]map[string]Snapshot{}}
+}
+
+func (s *fakeStore) Get(ctx context.Context, vin string) (map[string]Snapshot, error) {
+	out := map[string]Snapshot{}
+	for src, snap := range s.snaps[vin] {
+		out[src] = snap
+	}
+	return out, nil
+}
+
+func (s *fakeStore) Put(ctx context.Context, vin, source string, docs []domain.Document, fetchedAt time.Time) error {
+	if s.snaps[vin] == nil {
+		s.snaps[vin] = map[string]Snapshot{}
+	}
+	s.snaps[vin][source] = Snapshot{Documents: docs, FetchedAt: fetchedAt}
+	s.puts++
+	return nil
 }
 
 func doc(id, source string, date string) domain.Document {
@@ -100,7 +127,7 @@ func TestAggregator_Documents(t *testing.T) {
 			if timeout == 0 {
 				timeout = time.Second
 			}
-			agg := New(tt.sources, timeout)
+			agg := New(tt.sources, timeout, newFakeStore(), 15*time.Minute)
 			got := agg.Documents(context.Background(), "1HGCM82633A004352")
 
 			if got.VIN != "1HGCM82633A004352" {
@@ -146,7 +173,7 @@ func TestAggregator_RunsSourcesInParallel(t *testing.T) {
 		fakeSource{name: "A", delay: 100 * time.Millisecond},
 		fakeSource{name: "B", delay: 100 * time.Millisecond},
 	}
-	agg := New(sources, time.Second)
+	agg := New(sources, time.Second, newFakeStore(), 15*time.Minute)
 
 	start := time.Now()
 	agg.Documents(context.Background(), "X")
