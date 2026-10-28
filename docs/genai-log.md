@@ -36,3 +36,11 @@ This file is the raw source for section 8 of `docs/design.md`.
 
 ### AI wrote directly
 - `internal/source/service_test.go`: copied by AI from my `sales_test.go` with the Service schema, names and dates substituted. The path/vin assertions in the handler and the `Type` assertion were left as TODOs for me to write.
+
+## 2026-10-29 — aggregator (sequential)
+
+### Written by me, reviewed by AI
+- `internal/aggregator/aggregator.go`: I wrote it. Review caught: `for range` dropping the element, `defer cancel()` inside the loop, VIN left empty, and a sort callback mixing `sort.Slice` (index, bool) with `slices.SortFunc` (element, int) and re-parsing a `time.Time`.
+
+### AI wrote directly
+- `internal/aggregator/aggregator_test.go`: AI wrote the `fakeSource`, the `doc` helper, the table skeleton and the first case including the sort assertion. Two case-specific assertions were left as TODOs for me (failing source name; empty slice vs nil).
