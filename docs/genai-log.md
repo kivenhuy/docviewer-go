@@ -101,3 +101,8 @@ This file is the raw source for section 8 of `docs/design.md`.
 End-to-end check on the Compose stack: `/healthz` and `/readyz` 200; one request with `X-Request-ID: demo-42` shows the same id in both mock systems, two `source call` lines, the summary line and the access line; a `SLOW...` VIN returns 200 with `partial: true` after about 3s, and two `timeout` rows land in `source_call_log` with about 3000 ms.
 - `internal/api/middleware.go`: health probes (`/healthz`, `/readyz`) are no longer written to the access log. While testing with Postman I saw the Compose healthcheck log a `/readyz` line every 5 seconds, burying the real requests. A failing `/readyz` still logs its own warning. A test asserts that probes produce no log line. Review: I rebuilt the server and checked that the log only shows real traffic.
 - `docs/design.md` section 8, the bullet listing what the AI wrote and how the agent was used: written by AI at my request, as a summary of this log. The other bullets of section 8 are mine. Review: I checked the list against the entries above.
+
+## 2026-10-29 — README: AI Collaboration Narrative
+
+### Written by AI, reviewed by me
+- `README.md`, section "AI Collaboration Narrative" (required by page 4 of the brief, which I had not shown the AI at first): written by AI at my request from this log and section 8 of the design doc, structured around the three questions in the brief (strategy for guiding the AI, verifying and refining its output, ensuring final quality). Every example in it is taken from an entry in this log. The AI's first draft contained one false example (it credited itself with a Redis mistake that was in my draft); it was replaced before I committed. Review: I read each claim against this log.

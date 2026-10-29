@@ -9,7 +9,7 @@ each marked with the system it came from.
   snapshot exists, that snapshot is served with `stale: true`.
 - Every call to a source system is written to an audit table and to the logs.
 
-Design: [docs/design.md](docs/design.md) · API contract: [docs/openapi.yaml](docs/openapi.yaml) · GenAI usage: [docs/genai-log.md](docs/genai-log.md)
+Design: [docs/design.md](docs/design.md) · API contract: [docs/openapi.yaml](docs/openapi.yaml) · [AI Collaboration Narrative](#ai-collaboration-narrative) · Full AI log: [docs/genai-log.md](docs/genai-log.md)
 
 ## Run it (Docker, recommended)
 
@@ -130,3 +130,55 @@ docs                design doc, OpenAPI spec, GenAI log
 
 Adding a third system means one new type that implements `domain.Source` and one line in
 `cmd/server/main.go`. The aggregator does not change.
+
+## AI Collaboration Narrative
+
+I used Claude Code (in my IDE, with access to the repository and a terminal) as a mentor
+and reviewer, not as the author of the system. Every change it made is listed, with what I
+checked, in [docs/genai-log.md](docs/genai-log.md). Section 8 of the design doc covers the
+design phase in my own words.
+
+### Strategy for guiding the AI
+
+- **Design first, code second.** I wrote `docs/design.md` before any code: components, data
+  flow, the partial-failure table, cache and timeout decisions. The AI reviewed it and I added
+  or removed points. Once the design existed, it was the frame the AI had to follow; when it
+  suggested starting with the mock servers before the design was written, I stopped it.
+- **I write the core logic, the AI writes around it.** I wrote the source clients, the
+  aggregator (parallel fan-out, timeouts, partial failure, cache, stale fallback, outcome
+  classification) and the Postgres store. The AI wrote the parts that follow a pattern I had
+  already set or that are mostly setup: copies of my Sales code for the Service system, most
+  of the tests, the HTTP wiring, Docker, the observability scaffolding, the OpenAPI spec and
+  this README.
+- **Small steps.** One piece at a time, each one compiled, tested and committed before the
+  next, so a wrong suggestion could not spread across the codebase.
+
+### Verifying and refining its output
+
+- **Review both ways.** The AI reviewed my code and found real bugs, which I fixed myself:
+  `cancel()` called before the request it was meant to limit, a `for range` that silently
+  dropped empty snapshots, an error built with `fmt.Errorf` but never returned. I read
+  everything the AI wrote before committing and asked it to explain what I did not follow
+  (middleware chaining, `errors.As`, how a cache hit skips the source calls).
+- **Run it, do not trust it.** Claims were checked by running something:
+  - the parallel speed-up was measured with a test before and after the change
+    (about 200 ms sequential, 100 ms parallel);
+  - SQL was run against the real database before going into the code or the doc;
+  - the full stack was started with `docker compose` from an empty volume and exercised
+    with curl and Postman, including the failing and slow VINs.
+- **The AI was wrong too.** It warned that an `http.Client` timeout would not match
+  `errors.Is(err, context.DeadlineExceeded)`. A small experiment on Go 1.26 showed that it does, so the simpler check stayed. It also told me the brief did not ask for a video; it had only seen the part of the brief I pasted, and the full PDF showed otherwise. Since then I check its claims about the requirements against the original document.
+
+### Ensuring the final quality
+
+- **Tests on the core logic**, run with the race detector (`go test -race ./...`): partial
+  failure, timeouts, empty vs. error, sort order, cache hit / expiry / stale fallback, the
+  four call outcomes, and a timing test that fails if the sources ever run sequentially again.
+  Postgres behaviour is covered by integration tests against a real database.
+- **The design doc matches the code.** Anything promised but not built was removed or moved
+  to Future Work (for example the Prometheus endpoint), instead of being left as a claim.
+- **End-to-end checks on the real stack** before each commit that touched behaviour: merged
+  results, `partial` and `stale` flags, the 3 s timeout, cache hits that never reach the
+  source systems, and one request id followed through all three services.
+- **A written trail.** [docs/genai-log.md](docs/genai-log.md) records, per day, what I wrote,
+  what the AI wrote, and what I reviewed, so the split can be checked against the git history.
