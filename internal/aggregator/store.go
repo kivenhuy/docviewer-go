@@ -16,3 +16,15 @@ type SnapshotStore interface {
 	Get(ctx context.Context, vin string) (map[string]Snapshot, error)
 	Put(ctx context.Context, vin, source string, docs []domain.Document, fetchedAt time.Time) error
 }
+
+type CallLog struct {
+	VIN      string
+	Source   string
+	Outcome  string // "ok" | "empty" | "error" | "timeout"
+	Duration time.Duration
+	Err      error // nil khi ok/empty
+}
+
+type CallLogger interface {
+	LogCall(ctx context.Context, c CallLog) error
+}

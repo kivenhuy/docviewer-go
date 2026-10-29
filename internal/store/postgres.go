@@ -20,6 +20,7 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 }
 
 var _ aggregator.SnapshotStore = (*PostgresStore)(nil)
+var _ aggregator.CallLogger = (*PostgresStore)(nil)
 
 func (s *PostgresStore) Get(ctx context.Context, vin string) (map[string]aggregator.Snapshot, error) {
 	const q = `
@@ -77,5 +78,18 @@ func (s *PostgresStore) Put(ctx context.Context, vin, source string, docs []doma
 		return fmt.Errorf("update document_snapshots: %w", err)
 	}
 
+	return nil
+}
+
+func (s *PostgresStore) LogCall(ctx context.Context, c aggregator.CallLog) error {
+	const q = `INSERT INTO source_call_log (vin, source, outcome, duration_ms, error) VALUES ($1, $2, $3, $4, $5)`
+	var errStr sql.NullString
+	if c.Err != nil {
+		errStr = sql.NullString{String: c.Err.Error(), Valid: true}
+	}
+	_, err := s.db.ExecContext(ctx, q, c.VIN, c.Source, c.Outcome, c.Duration.Milliseconds(), errStr)
+	if err != nil {
+		return fmt.Errorf("insert source_call_log: %w", err)
+	}
 	return nil
 }

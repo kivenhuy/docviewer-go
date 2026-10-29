@@ -59,7 +59,8 @@ func main() {
 		source.NewSalesClient(salesURL, sourceTimeout),
 		source.NewServiceClient(serviceURL, sourceTimeout),
 	}
-	agg := aggregator.New(sources, sourceTimeout, store.NewPostgresStore(db), snapshotTTL)
+	pg := store.NewPostgresStore(db) // implements both SnapshotStore and CallLogger
+	agg := aggregator.New(sources, sourceTimeout, pg, snapshotTTL, pg)
 	h := api.NewHandler(agg)
 
 	mux := http.NewServeMux()

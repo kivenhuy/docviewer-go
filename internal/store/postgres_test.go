@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver for database/sql
 
+	"github.com/kivenhuy/docviewer-go/internal/aggregator"
 	"github.com/kivenhuy/docviewer-go/internal/domain"
 )
 
@@ -143,6 +145,60 @@ func TestPostgresStore_EmptySnapshotSurvives(t *testing.T) {
 	}
 	if len(snap.Documents) != 0 {
 		t.Errorf("len(Documents) = %d; want 0", len(snap.Documents))
+	}
+}
+
+func TestPostgresStore_LogCall(t *testing.T) {
+	s := requireDB(t)
+	const vin = "TEST-CALL-LOG"
+	ctx := context.Background()
+	if _, err := testDB.ExecContext(ctx, `DELETE FROM source_call_log WHERE vin = $1`, vin); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	calls := []aggregator.CallLog{
+		{VIN: vin, Source: "sales", Outcome: "ok", Duration: 120 * time.Millisecond},
+		{VIN: vin, Source: "service", Outcome: "timeout", Duration: 3 * time.Second, Err: errors.New("context deadline exceeded")},
+	}
+	for _, c := range calls {
+		if err := s.LogCall(ctx, c); err != nil {
+			t.Fatalf("LogCall(%s): %v", c.Source, err)
+		}
+	}
+
+	rows, err := testDB.QueryContext(ctx,
+		`SELECT source, outcome, duration_ms, error FROM source_call_log WHERE vin = $1 ORDER BY source`, vin)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		source, outcome string
+		ms              int64
+		errStr          sql.NullString
+	}
+	var got []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.source, &r.outcome, &r.ms, &r.errStr); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("rows = %d; want 2", len(got))
+	}
+	if got[0].source != "sales" || got[0].outcome != "ok" || got[0].ms != 120 || got[0].errStr.Valid {
+		t.Errorf("sales row = %+v; want ok, 120ms, NULL error", got[0])
+	}
+	if got[1].source != "service" || got[1].outcome != "timeout" || got[1].ms != 3000 ||
+		got[1].errStr.String != "context deadline exceeded" {
+		t.Errorf("service row = %+v; want timeout, 3000ms, error text stored", got[1])
 	}
 }
 

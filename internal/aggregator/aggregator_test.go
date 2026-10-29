@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,6 +43,9 @@ func (f fakeSource) Fetch(ctx context.Context, vin string) ([]domain.Document, e
 type fakeStore struct {
 	snaps map[string]map[string]Snapshot
 	puts  int
+
+	mu    sync.Mutex
+	calls []CallLog
 }
 
 func newFakeStore() *fakeStore {
@@ -62,6 +66,15 @@ func (s *fakeStore) Put(ctx context.Context, vin, source string, docs []domain.D
 	}
 	s.snaps[vin][source] = Snapshot{Documents: docs, FetchedAt: fetchedAt}
 	s.puts++
+	return nil
+}
+
+// LogCall makes fakeStore a CallLogger too. It is called from the fan-out
+// goroutines, so the slice is guarded by a mutex (go test -race checks this).
+func (s *fakeStore) LogCall(ctx context.Context, c CallLog) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, c)
 	return nil
 }
 
@@ -132,7 +145,7 @@ func TestAggregator_Documents(t *testing.T) {
 			if timeout == 0 {
 				timeout = time.Second
 			}
-			agg := New(tt.sources, timeout, newFakeStore(), 15*time.Minute)
+			agg := New(tt.sources, timeout, newFakeStore(), 15*time.Minute, newFakeStore())
 			got := agg.Documents(context.Background(), "1HGCM82633A004352")
 
 			if got.VIN != "1HGCM82633A004352" {
@@ -173,12 +186,49 @@ func TestAggregator_Documents(t *testing.T) {
 	}
 }
 
+// Every real source call is logged once with an outcome: ok | empty | error | timeout.
+// Case order in the aggregator matters: a timeout is also an error, so it must be checked first.
+func TestAggregator_CallLogOutcome(t *testing.T) {
+	tests := []struct {
+		name        string
+		src         fakeSource
+		wantOutcome string
+		wantErr     bool
+	}{
+		{"ok", fakeSource{name: "A", docs: []domain.Document{doc("A-1", "A", "2024-07-01")}}, "ok", false},
+		{"empty", fakeSource{name: "A", docs: []domain.Document{}}, "empty", false},
+		{"error", fakeSource{name: "A", err: errors.New("boom")}, "error", true},
+		{"timeout", fakeSource{name: "A", delay: 2 * time.Second}, "timeout", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore()
+			New([]domain.Source{tt.src}, 50*time.Millisecond, store, 15*time.Minute, store).
+				Documents(context.Background(), "X")
+
+			if len(store.calls) != 1 {
+				t.Fatalf("LogCall called %d times; want 1", len(store.calls))
+			}
+			c := store.calls[0]
+			if c.Outcome != tt.wantOutcome {
+				t.Errorf("Outcome = %q; want %q", c.Outcome, tt.wantOutcome)
+			}
+			if (c.Err != nil) != tt.wantErr {
+				t.Errorf("Err = %v; wantErr %v", c.Err, tt.wantErr)
+			}
+			if c.Duration <= 0 {
+				t.Errorf("Duration = %v; want > 0", c.Duration)
+			}
+		})
+	}
+}
+
 func TestAggregator_RunsSourcesInParallel(t *testing.T) {
 	sources := []domain.Source{
 		fakeSource{name: "A", delay: 100 * time.Millisecond},
 		fakeSource{name: "B", delay: 100 * time.Millisecond},
 	}
-	agg := New(sources, time.Second, newFakeStore(), 15*time.Minute)
+	agg := New(sources, time.Second, newFakeStore(), 15*time.Minute, newFakeStore())
 
 	start := time.Now()
 	agg.Documents(context.Background(), "X")
@@ -202,7 +252,7 @@ func TestAggregator_Cache(t *testing.T) {
 		var calls int32
 		src := fakeSource{name: "A", calls: &calls, docs: []domain.Document{doc("LIVE", "A", "2024-07-02")}}
 
-		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+		got := New([]domain.Source{src}, time.Second, store, ttl, store).Documents(context.Background(), vin)
 
 		if calls != 0 {
 			t.Errorf("source called %d times; want 0 (cache hit)", calls)
@@ -216,6 +266,9 @@ func TestAggregator_Cache(t *testing.T) {
 		if got.Stale || got.Partial {
 			t.Errorf("Stale=%v Partial=%v; want both false on a fresh cache hit", got.Stale, got.Partial)
 		}
+		if len(store.calls) != 0 {
+			t.Errorf("LogCall called %d times; want 0 (a cache hit is not a source call)", len(store.calls))
+		}
 	})
 
 	t.Run("expired snapshot: source called, result written back", func(t *testing.T) {
@@ -224,7 +277,7 @@ func TestAggregator_Cache(t *testing.T) {
 		var calls int32
 		src := fakeSource{name: "A", calls: &calls, docs: []domain.Document{doc("LIVE", "A", "2024-07-02")}}
 
-		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+		got := New([]domain.Source{src}, time.Second, store, ttl, store).Documents(context.Background(), vin)
 
 		if calls != 1 {
 			t.Errorf("source called %d times; want 1 (cache miss)", calls)
@@ -241,6 +294,12 @@ func TestAggregator_Cache(t *testing.T) {
 		if got.Stale {
 			t.Errorf("Stale = true; want false (fresh data was fetched)")
 		}
+		if len(store.calls) != 1 {
+			t.Fatalf("LogCall called %d times; want 1", len(store.calls))
+		}
+		if c := store.calls[0]; c.VIN != vin || c.Source != "A" || c.Outcome != "ok" {
+			t.Errorf("call log = %+v; want VIN=%s Source=A Outcome=ok", c, vin)
+		}
 	})
 
 	t.Run("source fails, expired snapshot exists: stale fallback", func(t *testing.T) {
@@ -248,7 +307,7 @@ func TestAggregator_Cache(t *testing.T) {
 		store.Put(context.Background(), vin, "A", []domain.Document{doc("OLD", "A", "2024-07-01")}, expired)
 		src := fakeSource{name: "A", err: errors.New("boom")}
 
-		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+		got := New([]domain.Source{src}, time.Second, store, ttl, store).Documents(context.Background(), vin)
 
 		if !got.Partial || !got.Stale {
 			t.Errorf("Partial=%v Stale=%v; want both true", got.Partial, got.Stale)
@@ -265,7 +324,7 @@ func TestAggregator_Cache(t *testing.T) {
 		store := newFakeStore()
 		src := fakeSource{name: "A", err: errors.New("boom")}
 
-		got := New([]domain.Source{src}, time.Second, store, ttl).Documents(context.Background(), vin)
+		got := New([]domain.Source{src}, time.Second, store, ttl, store).Documents(context.Background(), vin)
 
 		if !got.Partial || got.Stale {
 			t.Errorf("Partial=%v Stale=%v; want Partial=true Stale=false", got.Partial, got.Stale)
