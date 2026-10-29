@@ -190,14 +190,20 @@ GROUP BY source;
 - `/readyz` failing: Postgres is down, so there is no cache and no stale fallback.
 
 ## 8. Use of GenAI
+- I used Claude Code throughout the project , when I create my design.md I write down what structure of about that project and using claude for review my design remove or added some point, Ex: stale fallback and partial failure .All core logic write by me , if it have same I will call Claude code replicate it .Claude code wrote most of the tests
 
-_To be written in my own words on day 6 from `docs/genai-log.md`. Outline:_
+- Design phase: Brainstorm first , not code first because when we have knowledge about what we gonna do we can do it smoothly . Beside that we can keep AI knows what structure they need to follow when they code base on design docs. Early on, Claude suggested starting with the mock servers before the design existed; I stopped it and wrote the design draft first.
 
-- Which tool, and in what role (mentor / reviewer vs. code generator).
-- Design phase: what I asked, which suggestions I accepted and why, which I rejected and why.
-- What I verified myself rather than trusting the answer.
-- What the AI wrote directly into this repository (list it explicitly).
-- Where the AI was wrong and how I caught it.
+- For my testing you can see in commit history of repository , my first solution using loop for each request to each system . It took latency about 200ms when test with TestAggregator_RunsSourcesInParallel . After that based on my design using parallel of goroutine took latency just only 100ms
+
+- What the AI wrote directly into this repository, and how I used the agent. Claude Code ran inside my IDE with access to the repository and a terminal. Besides writing code, it ran `go test -race`, `docker compose`, `curl` and SQL against the local stack to check its own work, and I approved every change before it was written. Every piece it wrote is listed, with what I reviewed, in `docs/genai-log.md`. In short:
+  - **Tests**: most of the test code. The source clients' tests started from a skeleton it gave me, and I wrote the handlers and assertions. The aggregator tests (fakes, cache, call-log outcomes, parallel timing), the Postgres integration tests and the API, request-id and health tests were written by it.
+  - **Copies of my own patterns**: the Service mock and the Service client test, copied from the Sales versions I wrote, with the schema changed.
+  - **Wiring and infrastructure**: the HTTP handler and `cmd/server/main.go`, the Dockerfile and `compose.yml`.
+  - **Observability**: the request-id package, access log, per-call log line, `/healthz` and `/readyz`, request-id forwarding to the source systems, and graceful shutdown.
+  - **Documents**: `docs/openapi.yaml`, `README.md`, sections 6 (part of the table), 7 and 9 of this document, and the first version of `docs/genai-log.md`.
+  - **Written by me**: the mocks' Sales version, the domain types, both source clients, the aggregator (fan-out, timeout, partial failure, cache, stale fallback, outcome classification), the Postgres store. The AI reviewed this code and pointed out bugs; I fixed them myself.
+
 
 ## 9. Future Work
 

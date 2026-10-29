@@ -139,4 +139,13 @@ func TestAccessLog(t *testing.T) {
 	if line["path"] != "/x" {
 		t.Errorf("path = %v; want /x", line["path"])
 	}
+
+	// Health probes run every few seconds and must not be logged.
+	buf.Reset()
+	for _, p := range []string{"/healthz", "/readyz"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, p, nil))
+	}
+	if buf.Len() != 0 {
+		t.Errorf("health probes were logged: %s", buf.String())
+	}
 }
