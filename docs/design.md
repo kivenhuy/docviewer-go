@@ -129,6 +129,14 @@ flowchart LR
     + Alternative rejected : Authorize User
     + Why : no authentication in this implementation, endpoint assumed internal behind a gateway
 
+- Stateless API, horizontal scaling
+    + Decision : The API keeps no state in the process. Snapshots and the audit log live in Postgres, shared by every instance through one DATABASE_URL.
+    + Alternative rejected : a cache local to each instance (in-process memory, or a Redis installed next to each instance).
+    + Why : When the system grows, we run more than one instance behind a load balancer such as Nginx. With a per-instance memory cache, the first request may land on instance 1 and fill its cache, but the second lands on instance 2, which cannot see it and calls the source systems again. With the cache in Postgres, every instance reads the same snapshots, however many instances there are. (A shared Redis would also solve this; see "Cache in Postgres" for why Postgres was chosen.)
+    + Adding a source system does not make requests slower, because sources are called in parallel: latency is bounded by the slowest source, not the sum.
+    + The first bottleneck will be Postgres. The steps, in order: tune the connection pool (10 per instance today), add a read replica, then an in-memory L1 cache in front of Postgres (Future Work).
+
+
 ## 6. Technology Choices
 
 | Tech | Why | Considered instead |
