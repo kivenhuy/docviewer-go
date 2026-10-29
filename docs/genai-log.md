@@ -64,3 +64,8 @@ This file is the raw source for section 8 of `docs/design.md`.
 
 ### AI wrote directly
 - `internal/api/handler.go`, `internal/api/response.go`, `cmd/server/main.go`: written by AI at my request, following the shape of my `mock-sales` handler and my luckydraw `main.go`. VIN validation is 17 alphanumerics; the I/O/Q rule of the real VIN standard is deliberately not enforced so the mock fault-injection prefixes stay valid (documented in the handler). I reviewed the wiring (`main -> mux -> handler -> aggregator -> source clients -> mocks`) and ran the end-to-end check: both sources merged and sorted, service-only VIN, 400 on bad VIN, both-fail VIN with `partial: true` and two errors, and a second call served from the snapshot cache without hitting the mocks (verified by counting requests in the mock logs).
+
+## 2026-10-29 — containers
+
+### AI wrote directly
+- `Dockerfile`, `.dockerignore`, `compose.yml`: AI scaffolded them from my luckydraw Dockerfile. One multi-stage Dockerfile builds all three binaries via `--build-arg CMD=...`; a separate `migrate` target runs goose once and exits; the API waits for it with `service_completed_successfully`. Postgres is exposed on host port 5433 so it does not clash with my local Postgres. Docker runs on Colima (Docker Desktop is not allowed on my work laptop). AI also removed a leftover `credsStore: desktop` line from `~/.docker/config.json` (backed up) that broke image pulls. Verified with a clean `docker compose up --build` from an empty volume: migration applied, merged documents returned, failure VIN returns `partial: true`.

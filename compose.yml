@@ -1,0 +1,75 @@
+# docker compose up --build
+# API: http://localhost:8080/api/v1/vehicles/1HGCM82633A004352/documents
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: docviewer
+    ports:
+      - "127.0.0.1:5433:5432" # 5433 on the host so it does not clash with a local Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d docviewer"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # Applies migrations once, then exits. The API waits for it to succeed.
+  migrate:
+    build:
+      context: .
+      target: migrate
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/docviewer?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  mock-sales:
+    build:
+      context: .
+      args:
+        CMD: mock-sales
+    environment:
+      PORT: "8081"
+    ports:
+      - "127.0.0.1:8081:8081"
+
+  mock-service:
+    build:
+      context: .
+      args:
+        CMD: mock-service
+    environment:
+      PORT: "8082"
+    ports:
+      - "127.0.0.1:8082:8082"
+
+  server:
+    build:
+      context: .
+      args:
+        CMD: server
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/docviewer?sslmode=disable
+      SALES_URL: http://mock-sales:8081
+      SERVICE_URL: http://mock-service:8082
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mock-sales:
+        condition: service_started
+      mock-service:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  pgdata:
