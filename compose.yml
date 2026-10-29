@@ -62,6 +62,12 @@ services:
       SERVICE_URL: http://mock-service:8082
     ports:
       - "127.0.0.1:8080:8080"
+    healthcheck:
+      # busybox wget ships with alpine; /readyz checks Postgres, not the external systems
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     depends_on:
       migrate:
         condition: service_completed_successfully

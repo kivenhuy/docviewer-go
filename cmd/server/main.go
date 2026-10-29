@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver for database/sql
@@ -13,6 +16,7 @@ import (
 	"github.com/kivenhuy/docviewer-go/internal/aggregator"
 	"github.com/kivenhuy/docviewer-go/internal/api"
 	"github.com/kivenhuy/docviewer-go/internal/domain"
+	"github.com/kivenhuy/docviewer-go/internal/reqid"
 	"github.com/kivenhuy/docviewer-go/internal/source"
 	"github.com/kivenhuy/docviewer-go/internal/store"
 )
@@ -30,7 +34,8 @@ func envOr(key, def string) string {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// JSON logs on stdout; every line logged with a request context carries request_id.
+	slog.SetDefault(slog.New(reqid.NewLogHandler(slog.NewJSONHandler(os.Stdout, nil))))
 
 	dsn := envOr("DATABASE_URL", "postgres://localhost:5432/docviewer?sslmode=disable")
 	salesURL := envOr("SALES_URL", "http://localhost:8081")
@@ -59,24 +64,48 @@ func main() {
 		source.NewSalesClient(salesURL, sourceTimeout),
 		source.NewServiceClient(serviceURL, sourceTimeout),
 	}
-	pg := store.NewPostgresStore(db) // implements both SnapshotStore and CallLogger
-	agg := aggregator.New(sources, sourceTimeout, pg, snapshotTTL, pg)
+	pg := store.NewPostgresStore(db)            // implements both SnapshotStore and CallLogger
+	callLog := aggregator.NewSlogCallLogger(pg) // each source call: one log line, then one audit row
+	agg := aggregator.New(sources, sourceTimeout, pg, snapshotTTL, callLog)
 	h := api.NewHandler(agg)
+	health := api.NewHealth(db)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/vehicles/{vin}/documents", h.Documents)
+	mux.HandleFunc("GET /healthz", health.Healthz)
+	mux.HandleFunc("GET /readyz", health.Readyz)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           reqid.Middleware(api.AccessLog(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second, // > sourceTimeout, so a slow source still gets a response out
 		IdleTimeout:       60 * time.Second,
 	}
-	slog.Info("server starting", "addr", addr, "sales_url", salesURL, "service_url", serviceURL)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("server", "err", err)
-		os.Exit(1)
+	// Graceful shutdown: on SIGINT/SIGTERM (Ctrl+C, docker stop) stop accepting
+	// connections and let in-flight requests finish before the DB is closed.
+	stop, stopCancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopCancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("server starting", "addr", addr, "sales_url", salesURL, "service_url", serviceURL)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server", "err", err)
+			os.Exit(1)
+		}
+	case <-stop.Done():
+		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("shutdown", "err", err)
+		}
 	}
 }

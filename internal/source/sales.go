@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kivenhuy/docviewer-go/internal/domain"
+	"github.com/kivenhuy/docviewer-go/internal/reqid"
 )
 
 var _ domain.Source = (*SalesClient)(nil)
@@ -49,6 +50,9 @@ func (s *SalesClient) Fetch(ctx context.Context, vin string) ([]domain.Document,
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sales request: error %w", err)
+	}
+	if id := reqid.From(ctx); id != "" {
+		req.Header.Set(reqid.Header, id) // lets a request be followed across systems
 	}
 	resp, err := s.http.Do(req)
 	if err != nil {

@@ -36,22 +36,24 @@ var salesData = map[string][]Sales{
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
+	// request_id comes from the API in X-Request-ID, so one id can be grepped across all three services.
+	log := slog.With("request_id", r.Header.Get("X-Request-ID"))
 	vin := r.URL.Query().Get("vin")
 	if vin == "" {
-		slog.Warn("request missing parameter", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusBadRequest)
+		log.Warn("request missing parameter", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusBadRequest)
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "VIN is mandatory"})
 		return
 	}
 	vin = strings.ToUpper(vin)
 	if strings.HasPrefix(vin, "FAIL") {
-		slog.Error("Sales system unavailable", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusInternalServerError)
+		log.Error("Sales system unavailable", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusInternalServerError)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "sales system unavailable"})
 		return
 	}
 	if strings.HasPrefix(vin, "SLOW") {
-		slog.Info("request slow", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusOK)
+		log.Info("request slow", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusOK)
 		time.Sleep(5 * time.Second)
-		slog.Info("request after 5 second", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusOK)
+		log.Info("request after 5 second", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusOK)
 	}
 	docs := salesData[vin]
 	if docs == nil {
@@ -61,7 +63,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		VIN:  vin,
 		Docs: docs,
 	}
-	slog.Info("request", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusOK)
+	log.Info("request", "method", r.Method, "path", r.URL.Path, "vin", vin, "status", http.StatusOK)
 	writeJSON(w, http.StatusOK, resp)
 
 }

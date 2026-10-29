@@ -149,30 +149,45 @@ Goal: answer three questions from outside the process — *is a source slow or f
 
 ### Logging
 - `log/slog` with the JSON handler, written to stdout (collected by the container runtime, no file handling in the app).
-- A middleware creates a `request_id` (UUID) per HTTP request, stores it in `context.Context`, and every log line in that request carries it.
-- One log line per source call: `source`, `vin`, `duration_ms`, `outcome` (`ok` / `empty` / `error` / `timeout`), `cache` (`hit` / `miss` / `stale`).
-- One summary line per request: status code, total duration, `partial`, `stale`.
-- The same per-call facts are also written to the `source_call_log` table in Postgres (the audit log from Data Flow step 7), so they can be queried with SQL after the fact.
+- A middleware gives every HTTP request a `request_id` (128-bit random hex, or the caller's `X-Request-ID` if it is well-formed), stores it in `context.Context` and returns it in the response header. A small `slog.Handler` wrapper adds it to every log line written with that context, so no call site has to pass it by hand.
+- Per request the API writes:
+  - one `source call` line per external call: `source`, `vin`, `outcome` (`ok` / `empty` / `error` / `timeout`), `duration_ms`, and `err` when it failed (level WARN). A cache hit makes no call, so it writes no line.
+  - one `documents served` line: `vin`, number of documents, `partial`, `stale`.
+  - one `http request` access line: method, path, status, `duration_ms`.
+- The per-call facts are also written to the `source_call_log` table in Postgres (the audit log from Data Flow step 7). The log line and the row come from the same place: a decorator around the call logger writes the line, then hands the call to the Postgres store. The aggregator does not know about either.
 
 ### Metrics
-- Prometheus endpoint `GET /metrics` via `prometheus/client_golang`.
-- `http_requests_total{route,status}` and `http_request_duration_seconds{route}` — overall traffic and latency.
-- `source_request_duration_seconds{source}` — histogram per external system; shows which system is slow and whether the 3s timeout is well chosen.
-- `source_errors_total{source,reason}` — error and timeout counts per system.
-- `cache_lookups_total{result="hit|miss|stale"}` — cache effectiveness; a falling hit ratio means the TTL is too short or traffic is mostly unique VINs.
+- No Prometheus endpoint in this submission; it was planned and cut for time (see Future Work).
+- The `source_call_log` table answers the same questions with SQL. Latency and failure rate per system over the last hour:
+
+```sql
+SELECT source,
+       count(*) AS calls,
+       percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) AS p95_ms,
+       round(100.0 * count(*) FILTER (WHERE outcome IN ('error','timeout')) / count(*), 1) AS fail_pct
+FROM source_call_log
+WHERE called_at > now() - interval '1 hour'
+GROUP BY source;
+```
+
+- p95 per system shows whether the 3s timeout is well chosen; the `timeout` share shows how often it fires.
+- Cache effectiveness: compare the number of requests (access log lines) with the number of source calls. With a perfect cache, repeated VINs produce no calls.
+- Limit: this is fine for a reviewer or an incident, but a dashboard would query Postgres constantly. At real traffic, metrics belong in Prometheus, not in SQL.
 
 ### Tracing
-- Not a full tracing backend in this submission. The `request_id` is propagated to the external systems in an `X-Request-ID` header, so a request can be followed across the API and both mock systems by grepping one id.
+- Not a full tracing backend in this submission. The `request_id` is forwarded to the external systems in the `X-Request-ID` header, and both mock systems log it, so one request can be followed across the API and both systems by grepping one id (shown in the README).
 - OpenTelemetry (one span per source call, exported to Jaeger/Tempo) is listed under Future Work; the `request_id` middleware is the place where the trace context would be created.
 
 ### Health
-- `GET /healthz` — process is up (for Docker/Kubernetes liveness).
-- `GET /readyz` — Postgres reachable (readiness); the external systems are *not* part of readiness, because the service is designed to keep answering with snapshots when they are down.
+- `GET /healthz`: process is up (liveness). It checks nothing else, so a database outage does not make the orchestrator restart a healthy process.
+- `GET /readyz`: Postgres reachable within 1s (readiness), 503 otherwise. The external systems are *not* part of readiness, because the service is designed to keep answering with snapshots when they are down. Docker Compose uses `/readyz` as the container healthcheck.
+- On SIGTERM the server stops accepting connections and lets in-flight requests finish (up to 10s) before closing the database.
 
 ### What I would alert on
-- `partial` responses above a few percent for more than 5 minutes — a source is degraded.
-- p95 of `source_request_duration_seconds` approaching 3s — the timeout will start firing.
-- Cache hit ratio dropping sharply — TTL or traffic pattern changed.
+- `partial` responses above a few percent for more than 5 minutes: a source is degraded.
+- p95 latency of a source approaching 3s: the timeout will start firing.
+- `timeout` or `error` share of one source rising sharply: that system is failing, not this one.
+- `/readyz` failing: Postgres is down, so there is no cache and no stale fallback.
 
 ## 8. Use of GenAI
 
@@ -188,7 +203,9 @@ _To be written in my own words on day 6 from `docs/genai-log.md`. Outline:_
 
 - Authentication/authorization at an API gateway in front of this service (API key or OAuth2).
 - In-memory L1 cache in front of Postgres once DB round-trips become the bottleneck.
+- Prometheus `/metrics`: request rate and latency per route, a latency histogram and error counter per source, and cache hit/miss/stale counters. Today the same questions are answered with SQL over `source_call_log` (section 7).
 - OpenTelemetry tracing with one span per source call.
+- Retention for `source_call_log`, which grows by one row per source call (partition by day, drop old partitions).
 - Retries with backoff and a per-source circuit breaker, so a flapping system is not hammered.
 - Retention job deleting snapshots older than N days.
 - Pagination of the document list for vehicles with many documents.

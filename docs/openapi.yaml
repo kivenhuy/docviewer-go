@@ -1,0 +1,174 @@
+openapi: 3.0.3
+info:
+  title: Unified Document Viewer API
+  version: 1.0.0
+  description: |
+    Returns every document of a vehicle (by VIN) from the Sales and Service systems,
+    merged into one list sorted newest first. Each document says which system it came from.
+
+    A failing or slow source does not fail the request: the response is still 200,
+    with `partial: true` and one entry per failing source in `errors`. When a source
+    fails and an older snapshot exists, the snapshot is served and `stale` is true.
+
+    Every response carries an `X-Request-ID` header. Send your own (letters, digits,
+    `.`, `_`, `-`, up to 64 characters) to follow a request through the logs.
+servers:
+  - url: http://localhost:8080
+# No authentication in this service: it is meant to sit behind an API gateway (design.md, section 5).
+security: []
+paths:
+  /api/v1/vehicles/{vin}/documents:
+    get:
+      summary: List all documents of a vehicle
+      operationId: getVehicleDocuments
+      parameters:
+        - name: vin
+          in: path
+          required: true
+          description: |
+            17 alphanumeric characters, case-insensitive. The I/O/Q rule of the VIN
+            standard is not enforced, so the mock fault-injection VINs below are valid.
+            Mock VINs: `1HGCM82633A004352` (both systems), `JH4KA7532NC036794` (Service only),
+            `WAUZZZ8K9DA123456` (Sales only), `FAIL...` (both systems return 500),
+            `SLOW...` (both systems answer after 5s, past the 3s timeout).
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9]{17}$'
+          example: 1HGCM82633A004352
+        - $ref: '#/components/parameters/RequestID'
+      responses:
+        '200':
+          description: Merged document list. Check `partial` and `stale` before trusting it as complete.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentsResult'
+              examples:
+                complete:
+                  summary: Both systems answered
+                  value:
+                    vin: 1HGCM82633A004352
+                    documents:
+                      - { id: T-1002, title: Brake pad replacement, type: service_ticket, date: '2024-09-15T00:00:00Z', source: service }
+                      - { id: T-1001, title: Oil change, type: service_ticket, date: '2024-07-04T00:00:00Z', source: service }
+                      - { id: S-2, title: Invoice, type: invoice, date: '2024-07-02T00:00:00Z', source: sales }
+                      - { id: S-1, title: Sales contract, type: contract, date: '2024-07-01T00:00:00Z', source: sales }
+                    partial: false
+                    stale: false
+                partial:
+                  summary: Both systems failed, no snapshot
+                  value:
+                    vin: FAIL0000000000001
+                    documents: []
+                    partial: true
+                    stale: false
+                    errors:
+                      - { source: sales, reason: 'sales: unexpected status 500' }
+                      - { source: service, reason: 'service: unexpected status 500' }
+        '400':
+          description: The VIN is not 17 alphanumeric characters.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestID'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: vin must be 17 alphanumeric characters
+  /healthz:
+    get:
+      summary: Liveness, the process is up
+      operationId: healthz
+      responses:
+        '200':
+          description: Always 200 while the process serves HTTP.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /readyz:
+    get:
+      summary: Readiness, Postgres is reachable
+      operationId: readyz
+      description: The Sales and Service systems are not checked; the API keeps answering from snapshots when they are down.
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+              example: { status: ok, postgres: up }
+        '503':
+          description: Postgres is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+              example: { status: unavailable, postgres: down }
+components:
+  parameters:
+    RequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Optional caller-supplied id. Invalid values are replaced by a generated id.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._-]{1,64}$'
+  headers:
+    RequestID:
+      description: The id used for this request in every log line and forwarded to the source systems.
+      schema:
+        type: string
+  schemas:
+    Document:
+      type: object
+      required: [id, title, type, date, source]
+      properties:
+        id: { type: string, description: Id in the source system }
+        title: { type: string }
+        type: { type: string, description: 'Source-specific type, e.g. contract, invoice, service_ticket' }
+        date: { type: string, format: date-time }
+        source: { type: string, enum: [sales, service] }
+    SourceError:
+      type: object
+      required: [source, reason]
+      properties:
+        source: { type: string, enum: [sales, service] }
+        reason: { type: string }
+    DocumentsResult:
+      type: object
+      required: [vin, documents, partial, stale]
+      properties:
+        vin: { type: string }
+        documents:
+          type: array
+          description: Newest first. Never null; empty when nothing was found.
+          items: { $ref: '#/components/schemas/Document' }
+        partial:
+          type: boolean
+          description: True when at least one source failed or timed out.
+        stale:
+          type: boolean
+          description: True when at least one source's documents come from an older snapshot because the live call failed.
+        errors:
+          type: array
+          description: One entry per failing source. Omitted when every source answered.
+          items: { $ref: '#/components/schemas/SourceError' }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    Readiness:
+      type: object
+      properties:
+        status: { type: string }
+        postgres: { type: string, enum: [up, down] }

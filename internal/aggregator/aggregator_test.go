@@ -243,7 +243,7 @@ func TestAggregator_RunsSourcesInParallel(t *testing.T) {
 func TestAggregator_Cache(t *testing.T) {
 	const vin = "1HGCM82633A004352"
 	const ttl = 15 * time.Minute
-	fresh := time.Now().Add(-1 * time.Minute)  // inside TTL
+	fresh := time.Now().Add(-1 * time.Minute) // inside TTL
 	expired := time.Now().Add(-1 * time.Hour) // outside TTL
 
 	t.Run("fresh snapshot: source not called, no Put", func(t *testing.T) {

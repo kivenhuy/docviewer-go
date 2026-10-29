@@ -52,7 +52,7 @@ func (a *Aggregator) Documents(ctx context.Context, vin string) Result {
 
 	snaps, err := a.store.Get(ctx, vin)
 	if err != nil {
-		slog.Warn("snapshot store get", "vin", vin, "err", err)
+		slog.WarnContext(ctx, "snapshot store get", "vin", vin, "err", err)
 	}
 
 	data := Result{
@@ -93,7 +93,7 @@ func (a *Aggregator) Documents(ctx context.Context, vin string) Result {
 				VIN: vin, Source: src.Name(), Outcome: outcome,
 				Duration: time.Since(start), Err: err,
 			}); err != nil {
-				slog.Warn("call log", "vin", vin, "source", src.Name(), "err", err)
+				slog.WarnContext(ctx, "call log", "vin", vin, "source", src.Name(), "err", err)
 			}
 
 			result[i] = fetchResult{docs: docs, err: err}
@@ -105,7 +105,7 @@ func (a *Aggregator) Documents(ctx context.Context, vin string) Result {
 		r := result[i]
 		if r.err == nil && !r.fromCache {
 			if err := a.store.Put(ctx, vin, src.Name(), r.docs, time.Now()); err != nil {
-				slog.Warn("snapshot store put", "vin", vin, "source", src.Name(), "err", err)
+				slog.WarnContext(ctx, "snapshot store put", "vin", vin, "source", src.Name(), "err", err)
 			}
 		}
 

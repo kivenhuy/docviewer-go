@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -34,5 +35,11 @@ func (h *Handler) Documents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := h.agg.Documents(r.Context(), vin)
+	slog.InfoContext(r.Context(), "documents served",
+		"vin", vin,
+		"documents", len(result.Documents),
+		"partial", result.Partial,
+		"stale", result.Stale,
+	)
 	writeJSON(w, http.StatusOK, result)
 }
