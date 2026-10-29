@@ -106,3 +106,8 @@ End-to-end check on the Compose stack: `/healthz` and `/readyz` 200; one request
 
 ### Written by AI, reviewed by me
 - `README.md`, section "AI Collaboration Narrative" (required by page 4 of the brief, which I had not shown the AI at first): written by AI at my request from this log and section 8 of the design doc, structured around the three questions in the brief (strategy for guiding the AI, verifying and refining its output, ensuring final quality). Every example in it is taken from an entry in this log. The AI's first draft contained one false example (it credited itself with a Redis mistake that was in my draft); it was replaced before I committed. Review: I read each claim against this log.
+
+## 2026-10-29 — graceful shutdown fix
+
+### Written by AI, reviewed by me
+- While I was explaining graceful shutdown back to the AI, it re-checked its own setup and found a bug in it: the server waits up to 10s for in-flight requests, but `docker stop` also waits only 10s before SIGKILL, so Docker could kill the process before the shutdown finished. `compose.yml` now sets `stop_grace_period: 15s`. Review: I started a `SLOW...` request (about 3s), ran `docker compose stop server` one second later, and saw `shutting down` logged first, then the slow request still complete with 200 before the container stopped.

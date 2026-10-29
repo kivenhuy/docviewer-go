@@ -76,6 +76,9 @@ services:
       mock-service:
         condition: service_started
     restart: unless-stopped
+    # docker stop sends SIGTERM, waits this long, then SIGKILL. Must be longer than the
+    # server's own 10s shutdown window, or Docker kills it before in-flight requests finish.
+    stop_grace_period: 15s
 
 volumes:
   pgdata:
